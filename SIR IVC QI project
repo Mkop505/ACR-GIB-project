@@ -1,0 +1,437 @@
+#setup - call datasheet + get rid of exam data column + install logistf for firth model
+data <- IVC_Data_Analysis
+data$exam_date <- NULL
+
+#convert binary variables to factors 
+data$sex <- as.factor(data$sex)
+data$comp <- as.factor(data$comp)
+data$removed <- as.factor(data$removed)
+data$ppx <- as.factor(data$ppx)
+data$ac <- as.factor(data$ac)
+data$UFH <- as.factor(data$UFH)
+data$LMWH <- as.factor(data$LMWH)
+data$DT <- as.factor(data$DT)
+data$XI <- as.factor(data$XI)
+data$W <- as.factor(data$W)
+data$status <- as.factor(data$status)
+
+#Univariate Analyses for Complications
+#define variables
+
+#test normality for continuous data
+#Shapiro-Wilk test
+shap_res_age<- shapiro.test(data$age)
+shap_res_remtime <- shapiro.test(data$remove_time)
+shapiro_result <- list(
+  age = shap_res_age,
+  remove_time = shap_res_remtime
+)
+print(shapiro_result)
+
+#wilcoxon-Mann-Whitney
+#Set up the data frame
+cont_var <- c("age", "remove_time")
+all_wilcox_results <- data.frame(
+  Variable = character(),
+  Statistic = numeric(),
+  P_Value = numeric(),
+  Alternative_Hypothesis = character(),
+  stringsAsFactors = FALSE
+)
+for (var in cont_var) {
+  Wilcox_result <- wilcox.test(data[[var]]~data$comp)
+  all_wilcox_results <- rbind(all_wilcox_results, data.frame(
+    Variable = var,
+    Statistic = Wilcox_result$statistic,
+    P_Value = Wilcox_result$p.value,
+    Alternative_Hypothesis = Wilcox_result$alternative
+  ))
+}
+print(all_wilcox_results)
+  
+#Chi-square - for binomial variables
+binomial_var <- c("sex", "ppx", "removed", "ac","status")
+all_chisq_res <- data.frame(
+  Variable = character(),
+  Statistic = numeric(),
+  P_value = numeric(),
+  stringsAsFactors = FALSE
+)
+for(var in binomial_var) {
+  tbl <- table(data[[var]], data$comp)
+  test_result <- chisq.test(tbl)
+  
+  all_chisq_res<- rbind(all_chisq_res,data.frame(
+    Variable = var,
+    Statistic = test_result$statistic,
+    P_value = test_result$p.value
+  ))
+}
+print(all_chisq_res)
+  
+#Logistic Regression
+#unadjusted LR
+variables <- c("age", "sex", "ac", "removed", "remove_time")
+results <- data.frame(
+  Variable = character(),
+  Odds_Ratio = numeric(),
+  CI_Lower = numeric(),
+  CI_Upper = numeric(),
+  P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+for (var in variables) {
+  formula <- as.formula(paste("comp~", var))
+  model <- glm(formula, family = binomial, data=data)
+  coef <- summary(model)$coefficients
+  odds_ratio <- exp(confint(model)[2,1])
+  ci <- exp(confint(model)[2, ])
+  p_value <- coef[2,4]
+  
+  results <- rbind(results,data.frame(
+    Variable = var,
+    Odds_Ratio = round(odds_ratio, 3),
+    CI_Lower = round(ci[1], 3),
+    CI_Upper = round(ci[2], 3),
+    P_Value = round(p_value, 4)
+  ))
+}
+rownames(results) <- NULL
+print(results)
+
+library(logistf)
+# Firth’s penalized logistic regression
+firth_model <- logistf(comp ~ ppx, data=data)
+summary(firth_model)
+# Extract Odds Ratios + CI neatly
+exp_coef <- exp(cbind(OR = coef(firth_model), confint(firth_model)))
+round(exp_coef, 3)
+
+#adjusted LR
+adjusted_LR <- glm(comp~sex+age+ac+remove_time, family=binomial, data=data)
+summary(adjusted_LR)
+adjusted_LR <- data.frame(
+  Variable = rownames(coef(summary(adjusted_LR)))[-1],  
+  OR = round(exp(coef(adjusted_LR)[-1]), 3),
+  CI_Lower = round(exp(confint(adjusted_LR)[-1, 1]), 3),
+  CI_Upper = round(exp(confint(adjusted_LR)[-1, 2]), 3),
+  P_Value = round(coef(summary(adjusted_LR))[-1, 4], 4)
+)
+print(adjusted_LR)
+
+#firth penalized LR
+firth_model <- logistf(comp ~ sex + age + ppx + ac + remove_time, data = data)
+# Model summary
+summary(firth_model)
+# Extract Odds Ratios + CI neatly
+exp_coef <- exp(cbind(OR = coef(firth_model), confint(firth_model)))
+round(exp_coef, 3)
+
+library(dplyr)
+library(tibble)
+
+firth_results <- as.data.frame(exp_coef) %>%
+  rownames_to_column(var = "Variable") %>%
+  filter(Variable != "(Intercept)") %>%
+  rename(OR = OR, CI_Lower = `Lower 95%`, CI_Upper = `Upper 95%`) %>%
+  mutate(
+    Test = "Firth LR",
+    OR = sprintf("%.2f", OR),
+    CI_Lower = sprintf("%.2f", CI_Lower),
+    CI_Upper = sprintf("%.2f", CI_Upper),
+    P_Value = sprintf("%.4f", firth_model$prob[-1]),
+    Statistic = NA
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+print(firth_results)
+
+# ---- Create publication-ready combined results table ----
+library(dplyr)
+
+# Wilcoxon results
+wilcox_results <- all_wilcox_results %>%
+  mutate(
+    Test = "Wilcoxon",
+    OR = NA, CI_Lower = NA, CI_Upper = NA,
+    P_Value = sprintf("%.4f", P_Value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# Chi-square results
+chisq_results <- all_chisq_res %>%
+  mutate(
+    Test = "Chi-square",
+    OR = NA, CI_Lower = NA, CI_Upper = NA,
+    P_Value = sprintf("%.4f", P_value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# Univariate LR results
+uni_results <- results %>%
+  mutate(
+    Test = "Univariate LR",
+    Statistic = NA,
+    OR = sprintf("%.2f", Odds_Ratio),
+    CI_Lower = sprintf("%.2f", CI_Lower),
+    CI_Upper = sprintf("%.2f", CI_Upper),
+    P_Value = sprintf("%.4f", P_Value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# Adjusted LR results
+adj_results <- adjusted_LR %>%
+  mutate(
+    Test = "Adjusted LR",
+    Statistic = NA,
+    OR = sprintf("%.2f", OR),
+    CI_Lower = sprintf("%.2f", CI_Lower),
+    CI_Upper = sprintf("%.2f", CI_Upper),
+    P_Value = sprintf("%.4f", P_Value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+#setup - call datasheet + get rid of exam data column + install logistf for firth model
+data <- IVC_Data_Analysis
+data$exam_date <- NULL
+
+#convert binary variables to factors 
+data$sex <- as.factor(data$sex)
+data$comp <- as.factor(data$comp)
+data$removed <- as.factor(data$removed)
+data$ppx <- as.factor(data$ppx)
+data$ac <- as.factor(data$ac)
+data$UFH <- as.factor(data$UFH)
+data$LMWH <- as.factor(data$LMWH)
+data$DT <- as.factor(data$DT)
+data$XI <- as.factor(data$XI)
+data$W <- as.factor(data$W)
+data$status <- as.factor(data$status)
+
+#Univariate Analyses for Complications
+#define variables
+
+#test normality for continuous data
+#Shapiro-Wilk test
+shap_res_age<- shapiro.test(data$age)
+shap_res_remtime <- shapiro.test(data$remove_time)
+shapiro_result <- list(
+  age = shap_res_age,
+  remove_time = shap_res_remtime
+)
+print(shapiro_result)
+
+#wilcoxon-Mann-Whitney
+#Set up the data frame
+cont_var <- c("age", "remove_time")
+all_wilcox_results <- data.frame(
+  Variable = character(),
+  Statistic = numeric(),
+  P_Value = numeric(),
+  Alternative_Hypothesis = character(),
+  stringsAsFactors = FALSE
+)
+for (var in cont_var) {
+  Wilcox_result <- wilcox.test(data[[var]]~data$comp)
+  all_wilcox_results <- rbind(all_wilcox_results, data.frame(
+    Variable = var,
+    Statistic = Wilcox_result$statistic,
+    P_Value = Wilcox_result$p.value,
+    Alternative_Hypothesis = Wilcox_result$alternative
+  ))
+}
+print(all_wilcox_results)
+
+#Chi-square - for binomial variables
+binomial_var <- c("sex", "removed", "ac","status")
+all_chisq_res <- data.frame(
+  Variable = character(),
+  Statistic = numeric(),
+  P_value = numeric(),
+  stringsAsFactors = FALSE
+)
+for(var in binomial_var) {
+  tbl <- table(data[[var]], data$comp)
+  test_result <- chisq.test(tbl)
+  
+  all_chisq_res<- rbind(all_chisq_res,data.frame(
+    Variable = var,
+    Statistic = test_result$statistic,
+    P_value = test_result$p.value
+  ))
+}
+print(all_chisq_res)
+
+#Logistic Regression
+#unadjusted LR
+variables <- c("age", "sex", "ac", "removed", "remove_time")
+results <- data.frame(
+  Variable = character(),
+  Odds_Ratio = numeric(),
+  CI_Lower = numeric(),
+  CI_Upper = numeric(),
+  P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+for (var in variables) {
+  formula <- as.formula(paste("comp~", var))
+  model <- glm(formula, family = binomial, data=data)
+  coef <- summary(model)$coefficients
+  odds_ratio <- exp(confint(model)[2,1])
+  ci <- exp(confint(model)[2, ])
+  p_value <- coef[2,4]
+  
+  results <- rbind(results,data.frame(
+    Variable = var,
+    Odds_Ratio = round(odds_ratio, 3),
+    CI_Lower = round(ci[1], 3),
+    CI_Upper = round(ci[2], 3),
+    P_Value = round(p_value, 4)
+  ))
+}
+rownames(results) <- NULL
+print(results)
+
+#adjusted LR
+adjusted_LR <- glm(comp~sex+age+ac+remove_time, family=binomial, data=data)
+summary(adjusted_LR)
+adjusted_LR <- data.frame(
+  Variable = rownames(coef(summary(adjusted_LR)))[-1],  
+  OR = round(exp(coef(adjusted_LR)[-1]), 3),
+  CI_Lower = round(exp(confint(adjusted_LR)[-1, 1]), 3),
+  CI_Upper = round(exp(confint(adjusted_LR)[-1, 2]), 3),
+  P_Value = round(coef(summary(adjusted_LR))[-1, 4], 4)
+)
+print(adjusted_LR)
+
+
+#cox regression
+library(survival)
+library(dplyr)
+library(broom)
+
+# Fit the Cox model
+cox_model <- coxph(Surv(comp_time) ~ sex + age + remove_time + ac, data = data_cox)
+
+# Tidy the model with confidence intervals
+cox_results <- tidy(cox_model, exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    Test = "Cox PH",
+    HR = sprintf("%.2f", estimate),
+    CI_Lower = sprintf("%.2f", conf.low),
+    CI_Upper = sprintf("%.2f", conf.high),
+    P_Value = sprintf("%.4f", p.value),
+    Statistic = NA
+  ) %>%
+  select(term, Test, HR, CI_Lower, CI_Upper, Statistic, P_Value) %>%
+  rename(Variable = term)
+
+print(cox_results)
+
+
+
+
+#PPX filter analyses. There is a very small number of ppx filters.
+table_ppx <- table(data$ppx, data$comp)
+#1=ppx, 0=indicated
+
+test_results <- fisher.test(table_ppx)
+print(test_results)
+
+#firth penalized LR
+firth_model <- logistf(comp ~ sex + age + ppx + ac + remove_time, data = data)
+# Model summary
+summary(firth_model)
+# Extract Odds Ratios + CI neatly
+exp_coef <- exp(cbind(OR = coef(firth_model), confint(firth_model)))
+round(exp_coef, 3)
+
+
+
+
+library(dplyr)
+library(tibble)
+
+# ---- Prepare Wilcoxon results ----
+wilcox_results <- all_wilcox_results %>%
+  mutate(
+    Test = "Wilcoxon",
+    OR = NA, CI_Lower = NA, CI_Upper = NA,
+    P_Value = sprintf("%.4f", P_Value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# ---- Prepare Chi-square results ----
+chisq_results <- all_chisq_res %>%
+  mutate(
+    Test = "Chi-square",
+    OR = NA, CI_Lower = NA, CI_Upper = NA,
+    P_Value = sprintf("%.4f", P_value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# ---- Prepare Univariate LR results ----
+uni_results <- results %>%
+  mutate(
+    Test = "Univariate LR",
+    Statistic = NA,
+    OR = sprintf("%.2f", Odds_Ratio),
+    CI_Lower = sprintf("%.2f", CI_Lower),
+    CI_Upper = sprintf("%.2f", CI_Upper),
+    P_Value = sprintf("%.4f", P_Value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# ---- Prepare Adjusted LR results ----
+adj_results <- adjusted_LR %>%
+  mutate(
+    Test = "Adjusted LR",
+    Statistic = NA,
+    OR = sprintf("%.2f", OR),
+    CI_Lower = sprintf("%.2f", CI_Lower),
+    CI_Upper = sprintf("%.2f", CI_Upper),
+    P_Value = sprintf("%.4f", P_Value)
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# ---- Prepare Firth LR results ----
+firth_results <- as.data.frame(exp_coef) %>%
+  rownames_to_column(var = "Variable") %>%
+  filter(Variable != "(Intercept)") %>%
+  rename(OR = OR, CI_Lower = `Lower 95%`, CI_Upper = `Upper 95%`) %>%
+  mutate(
+    Test = "Firth LR",
+    OR = sprintf("%.2f", OR),
+    CI_Lower = sprintf("%.2f", CI_Lower),
+    CI_Upper = sprintf("%.2f", CI_Upper),
+    P_Value = sprintf("%.4f", firth_model$prob[-1]),
+    Statistic = NA
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# ---- Prepare Cox PH results ----
+cox_results <- cox_results %>%
+  mutate(
+    Test = "Cox PH",
+    Statistic = NA,
+    HR = HR,       # already formatted
+    OR = HR,       # rename HR to OR for table consistency
+    CI_Lower = CI_Lower,
+    CI_Upper = CI_Upper,
+    P_Value = P_Value
+  ) %>%
+  select(Variable, Test, OR, CI_Lower, CI_Upper, Statistic, P_Value)
+
+# ---- Combine all ----
+combined_results <- bind_rows(
+  wilcox_results,
+  chisq_results,
+  uni_results,
+  adj_results,
+  firth_results,
+  cox_results
+)
+
+# ---- View table ----
+print(combined_results)
